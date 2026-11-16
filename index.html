@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ambient machine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=20">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>Ambient machine</h1>
+    <span class="mono sub">8 slots · granular + loop</span>
+  </div>
+  <button id="power" class="btn" type="button" aria-live="polite">Audio off — click to start</button>
+  <div class="clock" aria-label="Clock">
+    <span class="dots"><i></i><i></i><i></i><i></i></span>
+    <span id="bar" class="mono">bar 1</span>
+  </div>
+  <svg id="meter" class="wave" aria-hidden="true"></svg>
+  <div class="scenes" aria-label="Scenes">
+    <span class="mono lbl">scenes</span>
+    <div id="sceneBtns"></div>
+    <button id="sceneSave" class="btn small" type="button" aria-pressed="false" title="Arm, then click a scene to store the current state into it (or shift-click a scene)">store</button>
+    <span id="morphKnob"></span>
+  </div>
+  <button id="stopAll" class="btn small" type="button" title="Stop every slot at the next launch boundary (double-click: stop now)">stop all</button>
+</header>
+
+<main id="rack"></main>
+
+<footer class="help mono">
+  Knobs and sliders: drag (shift = fine), wheel, arrow keys, double-click = default.
+  Drag a panel by its header to rearrange. Drag sounds (or audio files) onto a slot; drag on a waveform to set position.
+  <button id="resetLayout" class="link" type="button">reset layout</button>
+  <button id="resetAll" class="link" type="button">reset everything</button>
+</footer>
+
+<script src="engine.js?v=20"></script>
+<script src="ui.js?v=20"></script>
+</body>
+</html>

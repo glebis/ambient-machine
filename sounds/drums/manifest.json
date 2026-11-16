@@ -1,0 +1,66 @@
+[
+ {
+  "id": "drums/kit/kick",
+  "url": "sounds/drums/kit/kick.mp3",
+  "name": "kick",
+  "group": "drum kit",
+  "prompt": "one punchy analog kick drum hit, deep round low thump, loud, close-miked, dry, no reverb",
+  "seconds": 1.0
+ },
+ {
+  "id": "drums/kit/snare",
+  "url": "sounds/drums/kit/snare.mp3",
+  "name": "snare",
+  "group": "drum kit",
+  "prompt": "one dusty lo-fi snare drum hit, crisp crack with warm body, loud, dry, no reverb",
+  "seconds": 1.0
+ },
+ {
+  "id": "drums/kit/clap",
+  "url": "sounds/drums/kit/clap.mp3",
+  "name": "clap",
+  "group": "drum kit",
+  "prompt": "one loud hand clap, sharp transient, close-miked, dry studio, no reverb",
+  "seconds": 1.0
+ },
+ {
+  "id": "drums/kit/hat",
+  "url": "sounds/drums/kit/hat.mp3",
+  "name": "hat",
+  "group": "drum kit",
+  "prompt": "one closed hi-hat cymbal hit, crisp metallic tick, loud, close-miked, dry",
+  "seconds": 1.0
+ },
+ {
+  "id": "drums/kit/open-hat",
+  "url": "sounds/drums/kit/open-hat.mp3",
+  "name": "open hat",
+  "group": "drum kit",
+  "prompt": "one open hi-hat cymbal hit, bright airy shimmer that rings out, loud, dry",
+  "seconds": 1.5
+ },
+ {
+  "id": "drums/kit/rim",
+  "url": "sounds/drums/kit/rim.mp3",
+  "name": "rim",
+  "group": "drum kit",
+  "prompt": "loud wooden block knock, percussion hit, short and bright, dry",
+  "seconds": 1.0
+ },
+ {
+  "id": "drums/kit/tom",
+  "url": "sounds/drums/kit/tom.mp3",
+  "name": "tom",
+  "group": "drum kit",
+  "prompt": "one low floor tom drum hit, warm tuned boom, loud, dry",
+  "seconds": 1.2
+ },
+ {
+  "id": "drums/kit/shaker",
+  "url": "sounds/drums/kit/shaker.mp3",
+  "name": "shaker",
+  "group": "drum kit",
+  "prompt": "one single shaker shake, crisp seeds rattle, loud, close-miked, dry",
+  "seconds": 1.0
+ }
+]

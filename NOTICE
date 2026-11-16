@@ -1,0 +1,17 @@
+Ambient machine
+Copyright 2026-present Gleb Kalinin
+
+Ambient machine is licensed under the Apache License, Version 2.0.
+
+Implementation was assisted by AI coding tools under human product, design
+and review direction. See AUTHORSHIP.md for the authorship record.
+
+Bundled audio:
+- sounds/{dawn,glass,felt,tape,harbour}/ are synthesised by tools/earcons/generate.py
+  (part of this repository, same license).
+- sounds/drums/kit/ are one-shots generated with the ElevenLabs sound-effects API
+  from the text prompts listed in sounds/drums/manifest.json. They are AI-generated
+  audio; see the README for details.
+
+The source tree does not vendor third-party code. Fonts (Manrope, IBM Plex Mono)
+are loaded from Google Fonts at runtime under their own licenses (SIL OFL 1.1).

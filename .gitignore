@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+*.pyc
+# Drum hits you generate locally with ElevenLabs (they also get appended to sounds/drums/manifest.json)
+sounds/drums/generated/
+# Personal sample folders you drop in
+sounds/voice/
+sounds/local/
