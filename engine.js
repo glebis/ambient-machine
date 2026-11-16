@@ -104,6 +104,14 @@
       humanize: P('humanise', 0, 1, 0.15),
       seconds: P('length', 0.5, 5, 1, { fmt: fmt.s }),
       influence: P('prompt weight', 0, 1, 0.6),
+      takes: S('takes', ['1', '2', '3', '4'], '2'),
+    },
+    gen: {                                           // any-sound generator (ElevenLabs sound effects)
+      seconds: P('length', 0.5, 30, 6, { curve: 'log', step: 0.1, fmt: fmt.s }),
+      influence: P('prompt weight', 0, 1, 0.3),
+      loop: B('seamless loop', true),
+      takes: S('takes', ['1', '2', '3', '4'], '2'),
+      target: S('load into', ['library', 'slot 1', 'slot 2', 'slot 3', 'slot 4', 'slot 5', 'slot 6', 'slot 7', 'slot 8'], 'library'),
     },
     looper: {
       bars: S('length', ['1', '2', '4', '8'], '2'),

@@ -54,7 +54,7 @@
   const freshState = () => ({
     slots: PRESETS.map(([sound, p]) => ({ sound, params: { ...AM.defaults('slot'), ...p } })),
     delay: AM.defaults('delay'), reverb: AM.defaults('reverb'), master: AM.defaults('master'), looper: AM.defaults('looper'),
-    drums: freshDrums(),
+    gen: AM.defaults('gen'), drums: freshDrums(),
   });
   function loadState() {
     const fresh = freshState(), saved = store.get('am.state');
@@ -69,6 +69,7 @@
         params: merge(AM.defaults('slot'), saved.slots?.[i]?.params, 'slot') })),
       delay: merge(fresh.delay, saved.delay, 'delay'), reverb: merge(fresh.reverb, saved.reverb, 'reverb'),
       master: merge(fresh.master, saved.master, 'master'), looper: merge(fresh.looper, saved.looper, 'looper'),
+      gen: { ...merge(fresh.gen, saved.gen, 'gen'), prompt: typeof saved.gen?.prompt === 'string' ? saved.gen.prompt : '' },
       drums: mergeDrums(fresh.drums, saved.drums, merge),
     };
   }
@@ -82,6 +83,7 @@
         return { ...merge(d, t, 'drum'), sound: typeof t.sound === 'string' ? t.sound : d.sound,
           prompt: typeof t.prompt === 'string' ? t.prompt : d.prompt };
       }),
+      kitStyle: typeof s.kitStyle === 'string' ? s.kitStyle : '',
       patterns: def.patterns.map((d, i) => okPattern(s.patterns?.[i]) ? s.patterns[i] : d),
     };
   }
@@ -110,7 +112,7 @@
     if (l.obj[l.key] === v) return;
     l.obj[l.key] = v;
     if (l.section === 'drum') E.drums.apply(l.slot);
-    else if (l.section !== 'slot' && l.section !== 'drums') E.applySection(l.section);
+    else if (!['slot', 'drums', 'gen'].includes(l.section)) E.applySection(l.section);
     controls.get(path)?.forEach(c => c.render());
     if (l.section === 'slot') slotViews[l.slot]?.refresh(l.key);
     if (l.section === 'delay') delayView?.refresh();
@@ -240,11 +242,22 @@
   /* ------------------------------------------------------------ panels & drag-to-rearrange */
   const rack = $('#rack');
   let draggingPanel = null;
+  const collapsed = new Set(store.get('am.collapsed') || ['generator']);
   function panel(id, title, num, cls = '') {
+    const fold = h('button', { class: 'fold', type: 'button', 'aria-label': `collapse ${title}`, title: 'collapse / expand',
+      onclick: () => setFolded(!el.classList.contains('folded')) }, h('span', { 'aria-hidden': 'true' }, '–'));
     const header = h('header', { class: 'ph' }, h('span', { class: 'grip', 'aria-hidden': 'true' }, '⋮⋮'),
-      num ? h('span', { class: 'pnum mono' }, num) : null, h('span', { class: 'ptitle' }, title));
+      num ? h('span', { class: 'pnum mono' }, num) : null, h('span', { class: 'ptitle' }, title), fold);
     const body = h('div', { class: 'pb' });
     const el = h('section', { class: 'panel ' + cls, 'data-id': id }, header, body);
+    function setFolded(f) {
+      el.classList.toggle('folded', f); body.hidden = f;
+      fold.setAttribute('aria-expanded', String(!f)); fold.firstChild.textContent = f ? '+' : '–';
+      f ? collapsed.add(id) : collapsed.delete(id);
+      store.set('am.collapsed', [...collapsed]);
+    }
+    el.unfold = () => setFolded(false);
+    setFolded(collapsed.has(id));
     header.addEventListener('pointerdown', e => {
       if (e.target.closest('button, select, input, .sound, .knob, .slider')) return;
       el.draggable = true;
@@ -317,42 +330,82 @@
     }
     return s;
   }
+  const stars = new Set(store.get('am.stars') || []);
+  const closedGroups = new Set(store.get('am.libClosed') || []);
+  const openedMore = new Set();                       // groups showing all items this session
+  const GROUP_LIMIT = 8;
+  let libQuery = '';
   function buildLibrary() {
     const p = panel('library', 'library', null, 'wide');
     libBody = h('div', { class: 'lib' });
     const input = h('input', { type: 'file', accept: 'audio/*', multiple: true, hidden: true,
       onchange: async () => { for (const f of input.files) { try { await E.loadFile(f); } catch { notice(`Couldn't decode ${f.name}`); } } input.value = ''; } });
     noticeEl = h('span', { class: 'notice' });
-    const zone = h('div', { class: 'dropzone' }, 'Drop audio files here, or',
-      h('button', { class: 'btn small', type: 'button', onclick: () => input.click() }, 'add files…'), input, noticeEl);
+    const zone = h('div', { class: 'dropzone' }, 'drop audio files anywhere here or ',
+      h('button', { class: 'link', type: 'button', onclick: () => input.click() }, 'add files…'), input, noticeEl);
     dropTarget(zone, () => {});
-    p.body.append(libBody);
-    p.body.append(h('div', { class: 'row' }, h('span', { class: 'lab' }, 'click a sound to audition · drag it onto a slot')));
-    p.libZone = zone;
+    const search = h('input', { type: 'search', class: 'libsearch', placeholder: 'search sounds  ( / )', 'aria-label': 'search the library' });
+    const count = h('span', { class: 'lab mono' });
+    search.addEventListener('input', () => { libQuery = search.value.trim().toLowerCase(); renderLibrary(zone); });
+    search.addEventListener('keydown', e => { if (e.key === 'Escape') { search.value = ''; libQuery = ''; renderLibrary(zone); search.blur(); } });
+    addEventListener('keydown', e => {
+      if (e.key === '/' && !e.target.closest('input, textarea, select')) { e.preventDefault(); p.el.unfold(); search.focus(); }
+    });
+    p.body.append(h('div', { class: 'libtools' }, search, count), libBody, zone);
+    p.libZone = zone; p.libCount = count;
+    libPanel = p;
     renderLibrary(zone);
     E.on(what => { if (what === 'sounds') renderLibrary(zone); });
     return p;
   }
-  function renderLibrary(zone) {
+  let libPanel = null;
+  function renderLibrary() {
+    const q = libQuery, match = s => !q || `${s.name} ${s.group} ${s.prompt || ''}`.toLowerCase().includes(q);
+    const all = [...E.sounds.values()];
     const groups = new Map();
-    for (const s of E.sounds.values()) { if (!groups.has(s.group)) groups.set(s.group, []); groups.get(s.group).push(s); }
-    libBody.replaceChildren();
-    const rank = g => { const k = [...SETS, 'drum kit', 'drums · generated'].indexOf(g); return k < 0 ? 99 : k; };
-    for (const [g, list] of [...groups].sort((a, b) => rank(a[0]) - rank(b[0]))) {
-      const order = id => {
-        const [g, k, x] = id.split('/');
-        if (g === 'drums') return k === 'kit' ? KIT.findIndex(e => e[0] === x) : 0;
-        return KINDS.indexOf(k);
-      };
-      list.sort((a, b) => order(a.id) - order(b.id));
-      libBody.append(h('div', { class: 'lib-group' }, h('span', { class: 'gname' }, g), list.map(s => {
-        const chip = h('div', { class: 'chip', title: 'click to audition, drag onto a slot', 'data-id': s.id,
-          onclick: () => { E.resume().then(() => E.preview(s.id)); } }, miniWave(s.peaks), s.name);
-        dragSound(chip, () => s.id);
-        return chip;
-      })));
+    const starred = all.filter(s => stars.has(s.id) && match(s));
+    for (const s of all) {
+      if (stars.has(s.id) || !match(s)) continue;
+      if (!groups.has(s.group)) groups.set(s.group, []);
+      groups.get(s.group).push(s);
     }
-    libBody.append(zone);
+    libBody.replaceChildren();
+    const rank = g => { const k = [...SETS, 'generated', 'drum kit', 'drums · generated'].indexOf(g); return k < 0 ? 99 : k; };
+    const order = id => {
+      const [g, k, x] = id.split('/');
+      if (g === 'drums') return k === 'kit' ? KIT.findIndex(e => e[0] === x) : 0;
+      return KINDS.indexOf(k);
+    };
+    const chip = s => {
+      const on = stars.has(s.id);
+      const star = h('button', { class: 'star' + (on ? ' on' : ''), type: 'button', 'aria-pressed': String(on),
+        'aria-label': on ? `unstar ${s.name}` : `star ${s.name}`, title: on ? 'unstar' : 'star: pin to the top',
+        onclick: e => { e.stopPropagation(); on ? stars.delete(s.id) : stars.add(s.id); store.set('am.stars', [...stars]); renderLibrary(); } }, on ? '★' : '☆');
+      const c = h('div', { class: 'chip', title: s.prompt ? `${s.prompt}\nclick to audition, drag onto a slot` : 'click to audition, drag onto a slot', 'data-id': s.id,
+        onclick: () => { E.resume().then(() => E.preview(s.id)); } }, miniWave(s.peaks), h('span', { class: 'cname' }, s.name), star);
+      dragSound(c, () => s.id);
+      return c;
+    };
+    const section = (key, label, list) => {
+      const shut = !q && closedGroups.has(key);
+      const many = !q && list.length > GROUP_LIMIT && !openedMore.has(key);
+      const shown = many ? list.slice(0, GROUP_LIMIT) : list;
+      const head = h('button', { class: 'gname', type: 'button', 'aria-expanded': String(!shut),
+        onclick: () => { shut ? closedGroups.delete(key) : closedGroups.add(key); store.set('am.libClosed', [...closedGroups]); renderLibrary(); } },
+        h('span', { class: 'chev', 'aria-hidden': 'true' }, shut ? '▸' : '▾'), label, h('span', { class: 'gcount' }, String(list.length)));
+      return h('div', { class: 'lib-group' + (key === '★' ? ' starred' : '') }, head,
+        shut ? null : shown.map(chip),
+        shut || !many ? null : h('button', { class: 'link more', type: 'button', onclick: () => { openedMore.add(key); renderLibrary(); } }, `+${list.length - GROUP_LIMIT} more`));
+    };
+    starred.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    if (starred.length) libBody.append(section('★', '★ starred', starred));
+    for (const [g, list] of [...groups].sort((a, b) => rank(a[0]) - rank(b[0]))) {
+      list.sort((a, b) => order(a.id) - order(b.id) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+      libBody.append(section(g, g, list));
+    }
+    const total = starred.length + [...groups.values()].reduce((n, l) => n + l.length, 0);
+    if (q && !total) libBody.append(h('p', { class: 'lab' }, `nothing matches "${q}"`));
+    if (libPanel) libPanel.libCount.textContent = q ? `${total} of ${all.length}` : `${all.length} sounds`;
   }
   function flashChip(id) {
     const c = libBody?.querySelector(`[data-id="${CSS.escape(id)}"]`);
@@ -383,18 +436,24 @@
     const K = k => knob(path(k));
     const kn = {};
     for (const k of ['size', 'density', 'position', 'scan', 'spray', 'shape', 'pitch', 'spread', 'reverse', 'width', 'cutoff']) kn[k] = K(k);
-    const grid = h('div', { class: 'knobs' },
-      kn.size.el, kn.density.el, kn.position.el, kn.scan.el, kn.spray.el, kn.shape.el,
-      kn.pitch.el, kn.spread.el, select(path('scale')), kn.reverse.el, kn.width.el, kn.cutoff.el);
+    // What you reach for every time stays visible; texture, tone, pan and modulation fold away under "more".
+    const grid = h('div', { class: 'knobs cols4' }, kn.size.el, kn.density.el, kn.position.el, kn.pitch.el);
+    const extra = h('div', { class: 'knobs' }, kn.scan.el, kn.spray.el, kn.shape.el, kn.spread.el, select(path('scale')),
+      kn.reverse.el, kn.width.el, kn.cutoff.el);
     const sl = {};
     for (const k of ['volume', 'pan', 'sendDelay', 'sendReverb']) sl[k] = slider(path(k));
-    const sliders = h('div', { class: 'sliders' }, sl.volume.el, sl.pan.el, sl.sendDelay.el, sl.sendReverb.el);
+    const sliders = h('div', { class: 'sliders' }, sl.volume.el, sl.sendDelay.el, sl.sendReverb.el);
     const lfoRate = knob(path('lfoRate')), lfoDepth = knob(path('lfoDepth'));
     const lfo = h('div', { class: 'lfo' }, h('span', { class: 'tag' }, 'modulation'),
       select(path('lfoTarget')), select(path('lfoShape')), lfoRate.el, lfoDepth.el);
     const every = select(path('beats'), 'loop every (beats)');
     const loopRow = h('div', { class: 'row' }, every);
-    p.body.append(wave, grid, loopRow, sliders, lfo);
+    const moreNote = h('span', { class: 'mnote' });
+    const more = h('details', { class: 'more' }, h('summary', {}, 'more', moreNote),
+      extra, h('div', { class: 'sliders' }, sl.pan.el), lfo);
+    if (openMore.has(i)) more.open = true;
+    more.addEventListener('toggle', () => { more.open ? openMore.add(i) : openMore.delete(i); store.set('am.more', [...openMore]); });
+    p.body.append(wave, grid, loopRow, sliders, more);
 
     dropTarget(p.el, id => { setSound(i, id); flashChip(id); });
 
@@ -410,7 +469,9 @@
         const loop = st.params.mode === 'loop';
         segBtns.forEach(b => b.classList.toggle('on', b.textContent === st.params.mode));
         for (const k of ['size', 'density', 'spray', 'shape']) kn[k].el.classList.toggle('dim', loop);
-        loopRow.classList.toggle('dim', !loop);
+        loopRow.hidden = !loop;
+        const pm = st.params, lfoOn = pm.lfoTarget !== 'off' && pm.lfoDepth > 0;
+        moreNote.textContent = lfoOn ? ` · LFO → ${pm.lfoTarget}` : '';   // hidden state stays visible
         if (!key || key === 'lfoTarget' || key === 'lfoDepth') { lastMod?.setMod(null); lastMod = null; }
         this.dirty = true;
       },
@@ -425,6 +486,7 @@
     view.refresh();
     return p;
   }
+  const openMore = new Set(store.get('am.more') || []);
   function setSound(i, id) {
     AM.state.slots[i].sound = id;
     slotViews[i].refresh(); save();
@@ -492,7 +554,7 @@
   function buildReverb() {
     const p = panel('reverb', 'reverb', 'fx');
     p.body.append(h('div', { class: 'knobs cols4' }, ['size', 'damping', 'predelay', 'mix'].map(k => knob('reverb.' + k).el)));
-    p.body.append(h('div', { class: 'row lab' }, 'convolution · generated impulse, rebuilt when size or damping change'));
+    p.body.append(h('div', { class: 'row lab hint-line' }, 'convolution · generated impulse, rebuilt when size or damping change'));
     return p;
   }
 
@@ -521,7 +583,7 @@
     p.body.append(h('div', { class: 'btnrow' }, rec, play, dub, clear, toLib, wav), bar,
       h('div', { class: 'knobs cols4' }, select('looper.bars', 'bars'), knob('looper.keep').el),
       h('div', { class: 'sliders' }, slider('looper.level').el),
-      h('div', { class: 'row lab' }, 'records the slot + fx mix; the loop plays back dry, so overdubs never double it'));
+      h('div', { class: 'row lab hint-line' }, 'records the slot + fx mix; the loop plays back dry, so overdubs never double it'));
     looperView = { status, bar, rec, play, dub };
     E.looper.onstate = d => {
       status.textContent = { empty: 'empty', armed: 'armed — next bar', recording: 'recording', playing: d.dub ? 'overdubbing' : 'playing', stopped: 'stopped', cueing: 'cued — next bar' }[d.state] || d.state;
@@ -547,24 +609,312 @@
     return p;
   }
 
+  /* ------------------------------------------------------------ drum kits: every kit you make is kept */
+  // kits.list[kits.index] is the kit on the tracks right now and follows every change to it,
+  // so stepping back and forth never loses a choice. Generating a kit always starts a new entry.
+  const kits = (() => {
+    const k = store.get('am.kits');
+    return k && Array.isArray(k.list) && k.list.length ? k : { list: [], index: 0 };
+  })();
+  const kitSnapshot = () => AM.state.drums.tracks.map(t => ({ sound: t.sound, prompt: t.prompt || '' }));
+  function saveKits() { kits.list = kits.list.slice(-30); kits.index = Math.min(kits.index, kits.list.length - 1); store.set('am.kits', kits); }
+  function syncKit() {
+    if (!kits.list.length) kits.list.push({ name: 'default kit', tracks: kitSnapshot() });
+    if (kits.index < 0) return;
+    kits.list[kits.index].tracks = kitSnapshot(); saveKits();
+  }
+  function soundFor(i, id) {                          // fall back to the bundled piece when a sound has gone missing
+    return E.sounds.has(id) ? id : 'drums/kit/' + KIT[i][0];
+  }
+
   /* ------------------------------------------------------------ drum machine */
   let drumView = null;
-  async function loadDrumManifest() {
+  async function loadManifest(url) {
     let list = [];
-    try { const r = await fetch('sounds/drums/manifest.json', { cache: 'no-store' }); if (r.ok) list = await r.json(); } catch { /* no kit yet */ }
+    try { const r = await fetch(url, { cache: 'no-store' }); if (r.ok) list = await r.json(); } catch { /* none yet */ }
+    if (!Array.isArray(list)) return null;
     const loaded = await Promise.all(list.map(e => E.loadUrl(e.id, e.url, e.name, e.group).then(s => { s.prompt = e.prompt; return s; }).catch(() => null)));
-    AM.state.drums.tracks.forEach(t => { if (!t.prompt) t.prompt = E.sounds.get(t.sound)?.prompt || ''; });
-    drumView?.renderAll();
     return loaded.some(Boolean) || null;
   }
-  async function generatorStatus() {
-    try {
-      const r = await fetch('api/status', { cache: 'no-store' });
-      if (!r.ok) throw new Error();
-      const j = await r.json();
-      return j.key ? '' : 'No ElevenLabs key found: set ELEVENLABS_API_KEY or add it to SOPS, then restart the server.';
-    } catch { return 'Generating needs the local server: start it with "Open Ambient Machine.command".'; }
+  async function loadDrumManifest() {
+    const ok = await loadManifest('sounds/drums/manifest.json');
+    AM.state.drums.tracks.forEach((t, i) => {
+      if (ok && !E.sounds.has(t.sound)) { t.sound = soundFor(i, t.sound); t.prompt = ''; }
+      if (!t.prompt) t.prompt = E.sounds.get(t.sound)?.prompt || '';
+    });
+    if (ok) { if (!kits.list.length) syncKit(); save(); }
+    drumView?.renderAll();
+    return ok;
   }
+
+  /* ------------------------------------------------------------ local server API (ElevenLabs proxy) */
+  class ApiError extends Error { constructor(msg, code) { super(msg); this.code = code; } }
+  const START_HINT = 'run "python3 server.py" in the ambient-machine folder, or double-click "Open Ambient Machine.command"';
+  // Every call to server.py goes through here, so a stopped server, a plain static server, a timeout or an
+  // ElevenLabs error all become one readable sentence instead of "Failed to fetch".
+  async function api(path, opts = {}, timeoutMs = 150000) {
+    if (location.protocol === 'file:')
+      throw new ApiError(`This page is open as a file, so it can't generate. To start the local server, ${START_HINT}, then open http://localhost:8781.`, 'offline');
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeoutMs);
+    let r;
+    try {
+      r = await fetch(path, { cache: 'no-store', ...opts, signal: ctl.signal,
+        headers: opts.body ? { 'Content-Type': 'application/json' } : undefined });
+    } catch (err) {
+      if (err.name === 'AbortError') throw new ApiError(`No answer after ${Math.round(timeoutMs / 1000)} s. ElevenLabs may be overloaded; try again.`, 'timeout');
+      if (!navigator.onLine) throw new ApiError("This computer is offline. Reconnect, then try again.", 'offline');
+      throw new ApiError(`Can't reach the local server at ${location.host}; it has probably stopped. To restart it, ${START_HINT}, then try again.`, 'offline');
+    } finally { clearTimeout(timer); }
+    const j = await r.json().catch(() => null);
+    if (!j) throw new ApiError([404, 405, 501].includes(r.status)
+      ? `This page is served by a plain file server, which can't generate. Stop it, then ${START_HINT}.`
+      : `The server answered ${r.status} without details. Check the terminal running server.py.`, 'server');
+    if (!r.ok) throw new ApiError(j.error || `The server answered ${r.status}.`, j.code || 'error');
+    return j;
+  }
+
+  // ElevenLabs key: found by server.py in the env, SOPS or a saved key file, or entered in Settings.
+  const keyCtl = {
+    st: null, views: new Set(),
+    async refresh(check = false) {
+      try { this.st = await api('api/status' + (check ? '?check=1' : ''), {}, check ? 30000 : 8000); }
+      catch (err) { this.st = { server: false, error: err.message }; }
+      this.render();
+      return this.st;
+    },
+    render() { this.views.forEach(v => v()); },
+    summary() {
+      const st = this.st;
+      if (!st) return 'checking for an ElevenLabs key…';
+      if (!st.server) return st.error;
+      if (!st.key) return 'No ElevenLabs API key yet.';
+      const chk = st.check === 'ok' ? ' · ✓ ' + st.message : st.check === 'invalid' ? ' · ✗ ' + st.message
+        : st.check === 'unreachable' ? ' · ? ' + st.message : '';
+      return `Key from ${st.source}${chk}`;
+    },
+    problem() { const st = this.st; return !st ? '' : !st.server ? 'offline' : !st.key || st.check === 'invalid' ? 'key' : ''; },
+  };
+  addEventListener('focus', () => { if (keyCtl.problem() === 'offline') keyCtl.refresh(); });
+
+  /* ------------------------------------------------------------ settings dialog (the one place to set the key) */
+  let settingsDlg = null;
+  function openSettings(focusKey = false) {
+    if (!settingsDlg) settingsDlg = buildSettings();
+    if (!settingsDlg.open) settingsDlg.showModal();
+    keyCtl.refresh();
+    if (focusKey) settingsDlg.focusKey();
+  }
+  function buildSettings() {
+    const line = h('p', { class: 'keyline mono' });
+    const input = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'paste a key: sk_…', 'aria-label': 'ElevenLabs API key' });
+    const remember = h('input', { type: 'checkbox', checked: true });
+    const msg = h('p', { class: 'gstatus mono' });
+    const saveBtn = h('button', { class: 'btn small', type: 'button', onclick: () => saveKey() }, 'use key');
+    const check = h('button', { class: 'btn small', type: 'button', onclick: async () => {
+      check.disabled = true; line.textContent = 'checking with ElevenLabs…'; await keyCtl.refresh(true); check.disabled = false; } }, 'check key');
+    const forget = h('button', { class: 'btn small', type: 'button', title: 'forget the key entered here and delete the saved key file',
+      onclick: async () => { try { keyCtl.st = await api('api/key', { method: 'DELETE' }); keyCtl.render(); } catch (err) { msg.textContent = err.message; } } }, 'forget saved key');
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') saveKey(); });
+    async function saveKey() {
+      const key = input.value.trim();
+      if (!key) { msg.textContent = 'Paste a key first.'; msg.classList.add('bad'); return; }
+      saveBtn.disabled = true; msg.classList.remove('bad'); msg.textContent = 'checking the key with ElevenLabs…';
+      try {
+        keyCtl.st = await api('api/key', { method: 'POST', body: JSON.stringify({ key, remember: remember.checked }) }, 30000);
+        input.value = ''; msg.textContent = remember.checked ? 'Saved. It will be used every time the server starts.' : 'Using this key until the server stops.';
+        keyCtl.render();
+      } catch (err) { msg.textContent = err.message; msg.classList.add('bad'); }
+      finally { saveBtn.disabled = false; }
+    }
+    const render = () => {
+      const st = keyCtl.st;
+      line.textContent = keyCtl.summary(); line.classList.toggle('bad', !!keyCtl.problem());
+      check.hidden = !st?.key; forget.hidden = !(st?.source === 'entered in the page' || st?.remembered);
+    };
+    keyCtl.views.add(render); render();
+    const dlg = h('dialog', { class: 'settings', 'aria-label': 'settings' },
+      h('header', { class: 'ph' }, h('span', { class: 'ptitle' }, 'settings'),
+        h('button', { class: 'btn small close', type: 'button', onclick: () => dlg.close(), 'aria-label': 'close settings' }, 'close')),
+      h('section', {},
+        h('h3', { class: 'tag' }, 'ElevenLabs API key'),
+        line,
+        h('div', { class: 'keyform' }, input, saveBtn),
+        h('label', { class: 'lab remember' }, remember, ' remember on this computer (~/.config/ambient-machine, readable only by you)'),
+        msg,
+        h('div', { class: 'row' }, check, forget),
+        h('p', { class: 'lab' }, 'The server also finds a key in ELEVENLABS_API_KEY or a SOPS file, in that order after one entered here. ',
+          'The key stays on this computer; the page never sees it. Checking a key costs no credits.')));
+    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });   // click the backdrop to close
+    dlg.focusKey = () => input.focus();
+    document.body.append(dlg);
+    return dlg;
+  }
+  // Inline one-liner in each generator: quiet when the key is fine, red with a Settings button when it's not.
+  function keyHint() {
+    const txt = h('span', { class: 'keyline mono' });
+    const btn = h('button', { class: 'btn small', type: 'button', onclick: () => openSettings(true) }, 'settings…');
+    const el = h('div', { class: 'keyhint' }, txt, btn);
+    const render = () => {
+      const pr = keyCtl.problem();
+      txt.textContent = pr === 'key' ? 'No working ElevenLabs key: add one in Settings.' : pr === 'offline' ? keyCtl.st.error
+        : keyCtl.st?.key ? `ElevenLabs · key from ${keyCtl.st.source}` : '';
+      txt.classList.toggle('bad', !!pr); btn.hidden = pr !== 'key';
+    };
+    keyCtl.views.add(render); render();
+    return el;
+  }
+
+  /* ------------------------------------------------------------ generation queue + takes */
+  // ElevenLabs limits concurrent requests per plan (2–5), so run at most 3 and retry when it says "busy".
+  const genQueue = { running: 0, waiting: [], limit: 3 };
+  function enqueue(fn) {
+    return new Promise((resolve, reject) => {
+      const run = async () => {
+        genQueue.running++;
+        try { resolve(await fn()); } catch (err) { reject(err); }
+        finally { genQueue.running--; genQueue.waiting.shift()?.(); }
+      };
+      genQueue.running < genQueue.limit ? run() : genQueue.waiting.push(run);
+    });
+  }
+  const pause = ms => new Promise(r => setTimeout(r, ms));
+  async function generateOne(payload) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const j = await api('api/sfx', { method: 'POST', body: JSON.stringify(payload) });
+        const snd = await E.loadUrl(j.id, j.url, j.name, j.group).catch(() => {
+          throw new ApiError(`Saved ${j.url}, but the browser couldn't decode it.`, 'decode'); });
+        snd.prompt = j.prompt;
+        return { j, snd };
+      } catch (err) {
+        if (err.code === 'busy' && attempt < 3) { await pause(2500 * (attempt + 1)); continue; }
+        throw err;
+      }
+    }
+  }
+  const STOP_CODES = ['key', 'offline', 'quota'];      // no point sending the rest of a batch after these
+  // "clap" → ["clap 2", "clap 3", …] (or "clap" itself if it's free): names that aren't in the library yet (or reserved by a running batch)
+  const reserved = new Set();
+  function takeNames(base, n) {
+    base = base.replace(/ \d+$/, '');
+    const taken = new Set([...E.sounds.values()].map(x => x.name));
+    const out = [];
+    for (let k = 1; out.length < n; k++) {
+      const name = k === 1 ? base : `${base} ${k}`;
+      if (!taken.has(name) && !reserved.has(name)) out.push(name);
+    }
+    out.forEach(x => reserved.add(x));
+    return out;
+  }
+
+  // A takes tray: one row per target (a drum track, or "this sound"), N takes per row. Clicking a take
+  // auditions it AND puts it in place, so you can hear it in context; "keep" drops the other takes.
+  function takesTray() {
+    const el = h('div', { class: 'takes', hidden: true });
+    const head = h('div', { class: 'takes-head' });
+    const rowsEl = h('div', { class: 'takes-rows' });
+    const progress = h('span', { class: 'mono lab' });
+    const keep = h('button', { class: 'btn small', type: 'button', onclick: () => finish(true),
+      title: 'keep the chosen take in each row; move the others to sounds/.discarded' }, 'keep chosen');
+    const keepAll = h('button', { class: 'btn small', type: 'button', onclick: () => finish(false), title: 'keep every take in the library' }, 'keep all');
+    const stop = h('button', { class: 'btn small', type: 'button', onclick: () => { batch.cancelled = true; } }, 'stop');
+    head.append(h('span', { class: 'tag' }, 'takes · click to audition and use'), progress, stop, keepAll, keep);
+    el.append(head, rowsEl);
+    let rows = [], batch = { cancelled: false };
+    const busy = () => rows.some(r => r.items.some(it => it.state === 'pending'));
+    function render() {
+      rowsEl.replaceChildren(...rows.map((r, ri) => h('div', { class: 'take-row' },
+        h('span', { class: 'take-label mono' }, r.label),
+        r.items.map((it, k) => {
+          const b = h('button', { type: 'button', class: 'take ' + it.state + (r.chosen === k ? ' on' : ''),
+            title: it.state === 'error' ? it.error : it.state === 'ok' ? `${it.snd.name}: click to hear and use` : 'generating…',
+            disabled: it.state === 'pending', 'aria-pressed': String(r.chosen === k),
+            onclick: () => choose(ri, k) },
+            it.state === 'ok' ? [miniWave(it.snd.peaks), String(k + 1)] : it.state === 'error' ? '✗' : h('i', { class: 'spin' }));
+          return b;
+        }))));
+      const all = rows.flatMap(r => r.items), done = all.filter(i => i.state !== 'pending').length;
+      const failed = all.filter(i => i.state === 'error').length;
+      progress.textContent = all.length ? `${done}/${all.length} done${failed ? ` · ${failed} failed` : ''}` : '';
+      stop.hidden = !busy(); keep.disabled = keepAll.disabled = busy();
+    }
+    function choose(ri, k) {
+      const r = rows[ri], it = r.items[k];
+      if (it?.state === 'error') { progress.textContent = `take ${k + 1} failed: ${it.error}`; return; }
+      if (it?.state !== 'ok') return;
+      r.chosen = k; r.apply(it.snd, it.j); render();
+    }
+    async function finish(discardRest) {
+      const drop = discardRest ? rows.flatMap(r => r.items.filter((it, k) => it.state === 'ok' && k !== r.chosen).map(it => it.snd.id)) : [];
+      const used = new Set([...AM.state.slots.map(s => s.sound), ...AM.state.drums.tracks.map(t => t.sound)]);
+      const ids = drop.filter(id => !used.has(id));
+      if (ids.length) {
+        try { await api('api/discard', { method: 'POST', body: JSON.stringify({ ids }) }); ids.forEach(id => E.sounds.delete(id)); E.emit('sounds'); }
+        catch (err) { progress.textContent = err.message; return; }
+      }
+      rows = []; el.hidden = true; render();
+    }
+    // jobs: [{ label, payloads: [...], apply(snd, j) }] → runs all takes through the queue
+    async function run(jobs, status) {
+      batch = { cancelled: false };
+      const mine = batch;
+      const fresh = jobs.map(j => ({ label: j.label, apply: j.apply, chosen: -1, items: j.payloads.map(() => ({ state: 'pending' })) }));
+      // a new batch for the same label replaces that row; other rows stay so you can keep choosing
+      rows = [...rows.filter(r => !fresh.some(f => f.label === r.label) && r.items.every(i => i.state !== 'pending')), ...fresh];
+      el.hidden = false; el.closest('details')?.setAttribute('open', ''); el.closest('.panel')?.unfold?.(); render();
+      let stopErr = null;
+      await Promise.all(fresh.flatMap(r => r.items.map((it, k) => enqueue(async () => {
+        if (mine.cancelled || stopErr) { it.state = 'error'; it.error = stopErr?.message || 'stopped'; return; }
+        try {
+          const res = await generateOne(jobs[fresh.indexOf(r)].payloads[k]);
+          Object.assign(it, { state: 'ok' }, res);
+          if (r.chosen < 0) choose(rows.indexOf(r), k);        // first ready take goes in right away
+        } catch (err) {
+          it.state = 'error'; it.error = err.message;
+          if (STOP_CODES.includes(err.code)) stopErr = err;
+        }
+        render();
+      }))));
+      if (stopErr) {
+        status.textContent = stopErr.message; status.classList.add('bad');
+        if (stopErr.code === 'key') { await keyCtl.refresh(); openSettings(true); }
+        if (stopErr.code === 'offline') keyCtl.refresh();
+      } else status.textContent = '';
+      render();
+    }
+    return { el, run, busy };
+  }
+
+  /* ------------------------------------------------------------ any-sound generator */
+  function buildGenerator() {
+    const p = panel('generator', 'sound generator', 'eleven', 'wide');
+    const G = () => AM.state.gen;
+    const prompt = h('textarea', { rows: 2, 'aria-label': 'describe any sound for ElevenLabs',
+      placeholder: 'describe any sound, e.g. "distant church bells in fog, slow and reverberant" or "rain on a tin roof, close-miked"' });
+    prompt.value = G().prompt || '';
+    prompt.addEventListener('input', () => { G().prompt = prompt.value; save(); });
+    const status = h('span', { class: 'gstatus mono' });
+    const tray = takesTray();
+    const gen = h('button', { class: 'btn small primary', type: 'button', onclick: () => go() }, 'generate');
+    prompt.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) go(); });
+    p.body.append(h('div', { class: 'gen' }, prompt,
+      h('div', { class: 'row' }, knob('gen.seconds').el, knob('gen.influence').el, toggle('gen.loop'),
+        select('gen.takes'), select('gen.target'), gen),
+      status, tray.el, keyHint()),
+      h('div', { class: 'row lab hint-line' }, 'textures, pads, field recordings, foley: up to 30 s · ⌘↵ generates · takes are saved to sounds/generated'));
+    function go() {
+      const text = prompt.value.trim();
+      if (!text) { status.textContent = 'Describe the sound first.'; status.classList.add('bad'); prompt.focus(); return; }
+      status.classList.remove('bad');
+      const base = text.replace(/^(a|an|the|one)\s+/i, '').split(/[,.;]/)[0].trim().split(/\s+/).slice(0, 4).join(' ').slice(0, 32) || 'sound';
+      const n = +G().takes, slot = G().target.startsWith('slot') ? +G().target.split(' ')[1] - 1 : -1;
+      const payloads = takeNames(base, n).map(name => ({ kind: 'sound', text, name, seconds: G().seconds, influence: G().influence, loop: G().loop }));
+      tray.run([{ label: slot >= 0 ? `→ slot ${slot + 1}` : base, payloads,
+        apply: async snd => { flashChip(snd.id); if (slot >= 0) setSound(slot, snd.id); await E.resume(); E.preview(snd.id); } }], status);
+    }
+    return p;
+  }
+
   function buildDrums() {
     const p = panel('drums', 'drum machine', 'beat', 'wide');
     const D = () => AM.state.drums, pi = () => D().pattern.charCodeAt(0) - 65;
@@ -577,6 +927,31 @@
     const clear = h('button', { class: 'btn small', type: 'button', title: 'clear this pattern',
       onclick: () => { D().patterns[pi()].forEach(r => r.fill(0)); renderGrid(); save(); } }, 'clear');
     p.header.append(h('span', { class: 'spacer' }), h('span', { class: 'mono lab' }, 'pattern'), h('span', { class: 'seg' }, patBtns), copy, clear, play);
+
+    // --- kit navigator: ‹ kit › steps through every kit made so far
+    const kitSel = h('select', { 'aria-label': 'drum kit', onchange: () => showKit(+kitSel.value) });
+    const prevKit = h('button', { class: 'btn small', type: 'button', 'aria-label': 'previous kit', title: 'previous kit', onclick: () => showKit(kits.index - 1) }, '‹');
+    const nextKit = h('button', { class: 'btn small', type: 'button', 'aria-label': 'next kit', title: 'next kit', onclick: () => showKit(kits.index + 1) }, '›');
+    const dropKit = h('button', { class: 'link', type: 'button', title: 'remove this kit from the list (its sounds stay in the library)',
+      onclick: () => {
+        if (kits.list.length < 2) return;
+        const n = kits.index; kits.list.splice(n, 1); kits.index = -1;          // -1: nothing to sync away from
+        const to = Math.min(n, kits.list.length - 1);
+        kits.list[to].tracks.forEach((t, i) => { D().tracks[i].sound = soundFor(i, t.sound); D().tracks[i].prompt = t.prompt; });
+        kits.index = to; saveKits(); save(); refreshNames(); renderKits();
+      } }, 'remove');
+    const kitRow = h('div', { class: 'kitnav' }, h('span', { class: 'mono lab' }, 'kit'), prevKit, kitSel, nextKit, dropKit);
+    function renderKits() {
+      kitSel.replaceChildren(...kits.list.map((k, n) => h('option', { value: n }, `${n + 1}. ${k.name}`)));
+      kitSel.value = kits.index; prevKit.disabled = kits.index <= 0; nextKit.disabled = kits.index >= kits.list.length - 1;
+      kitRow.hidden = kits.list.length < 2;             // nothing to step through yet
+    }
+    function showKit(n) {
+      if (n < 0 || n >= kits.list.length || n === kits.index) return;
+      syncKit(); kits.index = n;
+      kits.list[n].tracks.forEach((t, i) => { D().tracks[i].sound = soundFor(i, t.sound); D().tracks[i].prompt = t.prompt; });
+      saveKits(); save(); refreshNames(); renderKits();
+    }
 
     // --- step grid
     const grid = h('div', { class: 'dgrid', role: 'grid', 'aria-label': 'drum steps' });
@@ -634,42 +1009,69 @@
     const prompt = h('textarea', { rows: 3, 'aria-label': 'sound description for ElevenLabs', placeholder: 'describe one drum hit, e.g. "one soft felt mallet kick, warm, dry"' });
     prompt.addEventListener('input', () => { D().tracks[sel].prompt = prompt.value; save(); });
     const status = h('span', { class: 'gstatus mono' });
-    const gen = h('button', { class: 'btn small', type: 'button', onclick: () => generate() }, 'generate with ElevenLabs');
+    const tray = takesTray();
+    const gen = h('button', { class: 'btn small primary', type: 'button', onclick: () => generate() }, 'generate');
     const genBox = h('div', { class: 'gen' }, h('span', { class: 'tag' }, 'new sound for this track'), prompt,
-      h('div', { class: 'row' }, knob('drums.seconds').el, knob('drums.influence').el, gen), status);
+      h('div', { class: 'row' }, knob('drums.seconds').el, knob('drums.influence').el, select('drums.takes'), gen));
+    // --- whole kit: one style, every track, N takes each
+    const style = h('input', { type: 'text', class: 'style', 'aria-label': 'kit style',
+      placeholder: 'kit style, e.g. "dusty lo-fi tape, warm" or "glassy, metallic, tiny"', value: D().kitStyle || '' });
+    style.addEventListener('input', () => { D().kitStyle = style.value; save(); costLine(); });
+    const kitBtn = h('button', { class: 'btn small primary', type: 'button', onclick: () => generateKit() }, 'generate kit');
+    const cost = h('span', { class: 'lab mono' });
+    const costLine = () => {
+      const n = KIT.length * +D().takes;
+      kitBtn.textContent = `generate kit · ${n}`;
+      cost.textContent = `8 tracks × ${D().takes} takes = ${n} generations · the current kit is kept`;
+    };
+    const kitBox = h('div', { class: 'gen kit' }, h('span', { class: 'tag' }, 'whole kit in one style'),
+      h('div', { class: 'row' }, style, kitBtn), cost);
     const globals = h('div', { class: 'knobs cols4' }, knob('drums.shuffle').el, select('drums.shuffleGrid', 'shuffle grid'),
       knob('drums.humanize').el, knob('drums.level').el);
-    p.body.append(h('div', { class: 'dwrap' }, grid),
+    const genMore = h('details', { class: 'more gen-more' }, h('summary', {}, 'generate sounds with ElevenLabs'),
+      h('div', { class: 'gen-cols' }, genBox, kitBox), status, tray.el, keyHint());
+    p.body.append(kitRow, h('div', { class: 'dwrap' }, grid),
       h('div', { class: 'dstrip' },
         h('div', {}, selLabel, ...strips),
-        genBox,
         h('div', {}, h('span', { class: 'tag' }, 'groove'), globals)),
-      h('div', { class: 'row lab' }, 'click a step to toggle · shift-click for an accent · drag to paint · hat chokes open hat · generated sounds are saved to sounds/drums/generated and appear in the library'));
+      genMore,
+      h('div', { class: 'row lab hint-line' }, 'click a step to toggle · shift-click for an accent · drag to paint · hat chokes open hat · generated sounds are saved to sounds/drums/generated and appear in the library'));
 
-    function takeName(tr) {                                  // "clap" → "clap 2", "clap 3", …
-      const base = (E.sounds.get(tr.sound)?.name || 'hit').replace(/ \d+$/, '');
-      const taken = new Set([...E.sounds.values()].map(x => x.name));
-      let n = 2; while (taken.has(`${base} ${n}`)) n++;
-      return `${base} ${n}`;
+    // What each track is for, so a kit style can be turned into eight prompts. ("rimshot" often comes back silent.)
+    const ROLE = { kick: ['punchy kick drum', 1], snare: ['snare drum', 1], clap: ['hand clap', 1], hat: ['closed hi-hat cymbal tick', 1],
+      'open-hat': ['open hi-hat cymbal that rings out', 1.5], rim: ['wooden rim knock', 1], tom: ['low floor tom', 1.2], shaker: ['single shaker shake', 1] };
+    const roleOf = i => KIT[i][0];
+    const trackLabel = i => E.sounds.get(D().tracks[i].sound)?.name.replace(/ \d+$/, '') || roleOf(i);
+    const applyTo = (i, entry = kits.list[kits.index]) => async snd => {
+      if (entry) entry.tracks[i] = { sound: snd.id, prompt: snd.prompt || '' };
+      if (!entry || entry === kits.list[kits.index]) {          // still on that kit: hear it now
+        D().tracks[i].sound = snd.id; D().tracks[i].prompt = snd.prompt || ''; save();
+        refreshNames(); flashChip(snd.id); await E.resume(); E.drums.trigger(i);
+      } else saveKits();
+    };
+    function generate() {
+      const i = sel, text = prompt.value.trim();
+      if (!text) { status.textContent = 'Describe the sound first.'; status.classList.add('bad'); prompt.focus(); return; }
+      status.classList.remove('bad');
+      const label = `${i + 1} ${trackLabel(i)}`;
+      const payloads = takeNames(trackLabel(i), +D().takes).map(name => ({ kind: 'drum', text, seconds: D().seconds, influence: D().influence, name }));
+      tray.run([{ label, payloads, apply: applyTo(i) }], status);
     }
-    async function generate() {
-      const i = sel, tr = D().tracks[i], text = prompt.value.trim();
-      if (!text) { status.textContent = 'Describe the sound first.'; return; }
-      gen.disabled = true; status.textContent = 'Generating… (usually 3–10 s)';
-      try {
-        const r = await fetch('api/sfx', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, seconds: D().seconds, influence: D().influence, name: takeName(tr) }) });
-        const j = await r.json().catch(() => ({ error: `server answered ${r.status}${r.status === 501 ? ' — start server.py to generate' : ''}` }));
-        if (!r.ok) throw new Error(j.error || r.status);
-        const snd = await E.loadUrl(j.id, j.url, j.name, j.group);
-        snd.prompt = j.prompt;
-        tr.sound = snd.id; tr.prompt = text; save();
-        refreshNames(); flashChip(snd.id);
-        await E.resume(); E.drums.trigger(i);
-        status.textContent = `Done: ${j.url.split('/').pop()}`;
-      } catch (err) {
-        status.textContent = String(err.message || err);
-      } finally { gen.disabled = false; }
+    function generateKit() {
+      const st = style.value.trim();
+      if (!st) { status.textContent = 'Describe the kit style first, e.g. "dusty lo-fi tape, warm".'; status.classList.add('bad'); style.focus(); return; }
+      if (tray.busy()) { status.textContent = 'Wait for the current takes to finish (or press stop).'; status.classList.add('bad'); return; }
+      status.classList.remove('bad');
+      syncKit();                                           // keep the current kit, then start a new one
+      const entry = { name: st.slice(0, 40), tracks: kitSnapshot() };
+      kits.list.push(entry); kits.index = kits.list.length - 1; saveKits(); renderKits();
+      tray.run(KIT.map((k, i) => {
+        const [what, secs] = ROLE[roleOf(i)] || [roleOf(i), 1];
+        const text = `one ${what} hit, ${st}, single one-shot, loud, close-miked, dry, no reverb`;
+        return { label: `${i + 1} ${roleOf(i)}`, apply: applyTo(i, entry),
+          payloads: takeNames(roleOf(i).replace('-', ' '), +D().takes).map(name =>
+            ({ kind: 'drum', text, seconds: Math.max(secs, D().seconds), influence: D().influence, name })) };
+      }), status);
     }
     function selectTrack(i) {
       sel = i;
@@ -688,6 +1090,7 @@
         mutes[i].setAttribute('aria-pressed', String(t.mute));
         solos[i].setAttribute('aria-pressed', String(t.solo));
       });
+      if (kits.list.length) syncKit();
       selectTrack(sel);
     }
     function renderGrid() {
@@ -697,7 +1100,7 @@
     }
     let lastStep = -1;
     drumView = {
-      refresh(key) { if (key === 'pattern') renderGrid(); if (key === 'mute' || key === 'solo') refreshNames(); },
+      refresh(key) { if (key === 'pattern') renderGrid(); if (key === 'mute' || key === 'solo') refreshNames(); if (key === 'takes') costLine(); },
       renderAll() { refreshNames(); renderGrid(); },
       update() {
         const st = E.drums.state;
@@ -708,8 +1111,7 @@
         lastStep = cur;
       },
     };
-    generatorStatus().then(msg => { if (msg) { status.textContent = msg; gen.disabled = true; } });
-    drumView.renderAll();
+    drumView.renderAll(); costLine(); renderKits();
     return p;
   }
 
@@ -830,6 +1232,7 @@
   const stopAll = $('#stopAll');
   stopAll.addEventListener('click', () => E.slots.forEach(s => s.stop()));
   stopAll.addEventListener('dblclick', () => E.slots.forEach(s => s.stopNow()));
+  $('#settingsBtn').addEventListener('click', () => openSettings());
   $('#resetLayout').addEventListener('click', () => { store.del('am.order'); location.reload(); });
   $('#resetAll').addEventListener('click', () => {
     if (!confirm('Reset all slots, effects, scenes and layout to the defaults?')) return;
@@ -858,7 +1261,7 @@
     await E.init();
     updatePower();
     E.ctx.addEventListener('statechange', updatePower);
-    const panels = [buildLibrary(), buildDrums()];
+    const panels = [buildLibrary(), buildGenerator(), buildDrums()];
     for (let i = 0; i < 8; i++) panels.push(buildSlot(i));
     panels.push(buildDelay(), buildReverb(), buildLooper(), buildMaster());
     const byId = new Map(panels.map(p => [p.el.dataset.id, p.el]));
@@ -872,7 +1275,8 @@
     const loads = [];
     for (const set of SETS) for (const kind of KINDS)
       loads.push(E.loadUrl(`${set}/${kind}`, `sounds/${set}/${kind}.wav`, kind.replace('-', ' '), set).catch(() => null));
-    loads.push(loadDrumManifest());
+    loads.push(loadDrumManifest(), loadManifest('sounds/generated/manifest.json'));
+    keyCtl.refresh();
     const got = await Promise.all(loads);
     if (!got.some(Boolean)) notice(location.protocol === 'file:'
       ? 'Built-in sounds need the local server: double-click "Open Ambient Machine.command". You can still drop files here.'

@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Sound generator panel: any sound from a text prompt via ElevenLabs, 0.5–30 s, optional seamless loop,
+  saved to `sounds/generated/` and optionally loaded straight into a slot.
+- Settings dialog: the one place to see, check, enter, remember or forget the ElevenLabs key.
+- Takes: generate 1–4 variations at once, audition and use them in place, keep the chosen one and move
+  the rest to `sounds/.discarded/`.
+- Whole-kit generation: one style prompt makes takes for all eight drum tracks, three requests at a time,
+  with retries when ElevenLabs is busy.
+
+- Library search (`/`), collapsible groups with counts, stars that pin sounds to the top, "+N more" for long groups.
+- Drum kit history: generating a kit keeps the previous one; step between kits with ‹ › or remove one.
+- Foldable panels and "more" disclosures: slots show only their core controls, generation controls are folded away,
+  how-to lines appear on hover.
+
+### Fixed
+- Drum tracks whose sound went missing showed "drop a sound"; they now fall back to the bundled kit piece.
+- "Failed to fetch" and other raw errors: a stopped server, a plain static server, timeouts, invalid keys,
+  missing credits, rate limits and network failures now show a plain explanation.
+- A clear message instead of a traceback when the port is already in use.
+
 ## [0.1.0] - 2026-11-16
 
 ### Added

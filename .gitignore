@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 # Drum hits you generate locally with ElevenLabs (they also get appended to sounds/drums/manifest.json)
 sounds/drums/generated/
+# Any-sound generations from the sound generator panel
+sounds/generated/
+sounds/.discarded/
 # Personal sample folders you drop in
 sounds/voice/
 sounds/local/
